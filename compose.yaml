@@ -1,0 +1,10 @@
+services:
+  web:
+    build: .
+    image: tmv-hokkaido-rail
+    ports:
+      - "8000:80"
+    environment:
+      GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
+      GOOGLE_MAPS_MAP_ID: ${GOOGLE_MAPS_MAP_ID:-}
+    restart: unless-stopped

@@ -1,0 +1,4 @@
+# Google Maps API キーを含むため公開しない
+config.js
+node_modules/
+.env
