@@ -185,3 +185,67 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .train.dimmed { opacity: .25; }
 .iw .demo-badge { margin-left: 6px; vertical-align: 2px; }
 .iw .row { font-size: 13px; padding: 2px 0; }
+
+/* ---------- オフライン地図 ---------- */
+.key-card button.secondary { background: var(--bg-soft); color: var(--fg); border: 1px solid var(--border); }
+.key-card .or { display: flex; align-items: center; gap: 8px; margin: 14px 0; color: var(--muted); font-size: 12px; }
+.key-card .or::before, .key-card .or::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
+.key-card .small { font-size: 12px; margin: 8px 0 0; }
+
+.map-notice {
+  position: absolute; left: 50%; top: 12px; transform: translateX(-50%); z-index: 4;
+  max-width: calc(100% - 32px); padding: 8px 14px; border-radius: 8px;
+  background: #1c1f24; color: #fff; font-size: 13px; box-shadow: var(--shadow);
+}
+.map-notice[hidden] { display: none; }
+
+#map.offline-map { background: #aad3df; overflow: hidden; touch-action: none; cursor: grab; user-select: none; -webkit-user-select: none; }
+#map.offline-map.dragging { cursor: grabbing; }
+.om-svg { position: absolute; inset: 0; display: block; }
+.om-land { fill: #f2efe9; stroke: #9fb8c4; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.om-casing, .om-stroke { fill: none; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.om-casing { stroke: #fff; stroke-width: 7; opacity: .9; pointer-events: none; }
+.om-stroke { stroke-width: 4; cursor: pointer; pointer-events: stroke; }
+.om-markers { position: absolute; inset: 0; pointer-events: none; }
+.om-mk { position: absolute; left: 0; top: 0; pointer-events: auto; cursor: pointer; }
+/* Google の AdvancedMarker と同じく、要素の下端中央を座標に合わせる */
+.om-mk-anchor { transform: translate(-50%, -100%); }
+.om-mk:hover { z-index: 100 !important; }
+
+.om-info {
+  position: absolute; left: 0; top: 0; z-index: 200; max-width: 300px;
+  background: #fff; color: #1c1f24; border-radius: 8px; padding: 12px 32px 12px 14px;
+  box-shadow: 0 2px 7px 1px rgba(0,0,0,.3); cursor: auto; user-select: text; -webkit-user-select: text;
+}
+.om-info[hidden] { display: none; }
+.om-info::after {
+  content: ""; position: absolute; left: 50%; top: 100%; transform: translateX(-50%);
+  border: 9px solid transparent; border-top-color: #fff; border-bottom: 0;
+}
+.om-info-close {
+  position: absolute; top: 4px; right: 4px; width: 26px; height: 26px; border: 0; border-radius: 50%;
+  background: none; font-size: 20px; line-height: 1; color: #646b75;
+}
+.om-info-close:hover { background: #f1f3f4; }
+
+.om-zoom {
+  position: absolute; right: 12px; bottom: 28px; z-index: 210; display: flex; flex-direction: column;
+  background: #fff; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,.3); overflow: hidden;
+}
+.om-zoom button { width: 40px; height: 40px; border: 0; background: none; font-size: 22px; color: #444; }
+.om-zoom button + button { border-top: 1px solid #e6e6e6; }
+.om-zoom button:hover { background: #f1f3f4; }
+.om-switch {
+  position: absolute; right: 12px; top: 12px; z-index: 210; padding: 8px 12px; border: 0; border-radius: 8px;
+  background: #fff; color: #1c1f24; font-size: 13px; font-weight: 600; box-shadow: 0 1px 4px rgba(0,0,0,.3);
+}
+.om-switch:hover { background: #f1f3f4; }
+.om-attrib {
+  position: absolute; right: 0; bottom: 0; z-index: 210; padding: 2px 6px;
+  background: rgba(255,255,255,.75); color: #444; font-size: 11px; pointer-events: none;
+}
+
+/* ---------- 時刻表どおりの列車 ---------- */
+.tt-badge { font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 4px; background: #1d5fbf; color: #fff; margin-left: 6px; vertical-align: 2px; }
+/* 時刻表どおりの列車は濃い縁取りで、デモ列車と見分けられるようにする */
+.train.real svg { filter: drop-shadow(0 0 0 #1c1f24) drop-shadow(0 0 1.5px #1c1f24) drop-shadow(0 2px 3px rgba(0,0,0,.5)); }

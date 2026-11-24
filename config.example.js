@@ -5,4 +5,6 @@ window.APP_CONFIG = {
   googleMapsApiKey: "",
   // Google Cloud で作成したマップ ID（未設定なら開発用の DEMO_MAP_ID を使用）
   mapId: "",
+  // true にすると API キーを使わず、常にオフライン地図で起動する
+  offline: false,
 };

@@ -30,9 +30,31 @@ LINES = [
     ("senmo", "釧網線", "北海道旅客鉄道", "釧網本線", None, "#0f9fb3", [("網走", "東釧路")]),
     ("hidaka", "日高線", "北海道旅客鉄道", "日高本線", None, "#8a6d3b", [("苫小牧", "鵡川")]),
     ("isaribi", "道南いさりび鉄道線", "道南いさりび鉄道", "道南いさりび鉄道線", None, "#5b6abf", [("五稜郭", "木古内")]),
+    # 札幌市営地下鉄（公式のラインカラー）
+    ("namboku", "南北線", "札幌市", "札幌市営地下鉄南北線", None, "#00873c", [("麻生", "真駒内")]),
+    ("tozai", "東西線", "札幌市", "札幌市営地下鉄東西線", None, "#f39800", [("宮の沢", "新さっぽろ")]),
+    ("toho", "東豊線", "札幌市", "札幌市営地下鉄東豊線", None, "#0078c8", [("栄町", "福住")]),
+    # 路面電車。N02 の路線名が複数に分かれているのでまとめる。
+    # 札幌市電はループ線（起点と終点が同じ）。経由駅は経路探索で逆回りしないための目印
+    ("sapporo-tram", ("1条線", "山鼻西線", "山鼻線", "都心線"), "札幌市交通事業振興公社", "札幌市電", None, "#6a8f00", [
+        ("西4丁目", "西15丁目", "西線16条", "中央図書館前", "山鼻19条", "中島公園通", "すすきの", "狸小路", "西4丁目"),
+    ]),
+    ("hakodate-tram", ("本線", "大森線", "湯の川線", "宝来・谷地頭線"), "函館市", "函館市電", None, "#00897b", [
+        ("湯の川", "松風町", "函館駅前", "十字街", "函館どつく前"),
+        ("十字街", "谷地頭"),
+    ]),
 ]
 
-OPERATOR_NAMES = {"北海道旅客鉄道": "JR北海道", "道南いさりび鉄道": "道南いさりび鉄道"}
+OPERATOR_NAMES = {
+    "北海道旅客鉄道": "JR北海道",
+    "道南いさりび鉄道": "道南いさりび鉄道",
+    "札幌市": "札幌市交通局",
+    "札幌市交通事業振興公社": "札幌市交通事業振興公社",
+    "函館市": "函館市企業局",
+}
+
+# 他社線と同名の別駅があるとき、駅名の後ろに付ける種別
+NAME_SUFFIX = {"namboku": "地下鉄", "tozai": "地下鉄", "toho": "地下鉄", "sapporo-tram": "市電", "hakodate-tram": "市電"}
 
 
 def key(c):
@@ -133,21 +155,23 @@ def main(src):
     out_lines = []
     all_stations = {}  # group code -> station dict
 
-    for lid, n02name, op, name, nickname, color, routes in LINES:
+    for lid, n02names, op, name, nickname, color, routes in LINES:
+        if isinstance(n02names, str):
+            n02names = (n02names,)
         segs = []
         for f in sections["features"]:
             p = f["properties"]
-            if p["N02_003"] == n02name and op in p["N02_004"]:
+            if p["N02_003"] in n02names and op in p["N02_004"]:
                 g = f["geometry"]
                 parts = [g["coordinates"]] if g["type"] == "LineString" else g["coordinates"]
                 segs.extend([tuple(map(tuple, part)) for part in parts])
         sts = []
         for f in stations["features"]:
             p = f["properties"]
-            if p["N02_003"] == n02name and op in p["N02_004"]:
+            if p["N02_003"] in n02names and op in p["N02_004"]:
                 sts.append({"name": p["N02_005"], "group": p["N02_005g"], "pt": station_point(f["geometry"])})
         if not segs:
-            sys.exit(f"線路データがありません: {n02name}")
+            sys.exit(f"線路データがありません: {n02names}")
 
         # グラフ構築
         graph = defaultdict(list)
@@ -201,22 +225,29 @@ def main(src):
             along = [0.0]
             for a, b in zip(path, path[1:]):
                 along.append(along[-1] + dist(a, b))
-            on = []
+            loop = route[0] == route[-1]
+            on = {}
             for st in sts:
                 if st["name"] in placed:
                     continue
                 i, d = min(((i, dist(v, st["pt"])) for i, v in enumerate(path)), key=lambda t: t[1])
-                if d < 0.4:
-                    on.append((along[i], st))
-            on.sort(key=lambda t: t[0])
+                # 上下で別の停留場がある場合（例: 札幌市電の狸小路）は同名を 1 つにまとめる
+                if d < 0.4 and (st["name"] not in on or along[i] < on[st["name"]]):
+                    on[st["name"]] = along[i]
             # 支線は分岐駅・合流駅も一覧に含める
-            names = [st["name"] for _, st in on]
-            for end in (route[0], route[-1]):
+            names = sorted(on, key=on.get)
+            for end in dict.fromkeys((route[0], route[-1])):
                 if end not in names:
                     names.insert(0 if end == route[0] else len(names), end)
+            if loop:
+                # ループ線は起点に戻ってくる
+                names.remove(route[0])
+                names = [route[0]] + names + [route[0]]
             placed.update(names)
             # 列車の位置計算用: 区間の軌跡と、各駅が軌跡上のどの頂点か
             stop_idx = [min(range(len(path)), key=lambda i: dist(path[i], by_name[n]["pt"])) for n in names]
+            if loop:
+                stop_idx[0], stop_idx[-1] = 0, len(path) - 1
             keep = sorted(set(stop_idx))
             simple, new_index = [], {}
             for k0, k1 in zip([0] + keep, keep + [len(path) - 1]):
@@ -262,6 +293,24 @@ def main(src):
         else:
             merged.append({"name": st["name"], "lat": round(y, 5), "lng": round(x, 5), "lines": st["lines"]})
     merged.sort(key=lambda s: (-s["lat"]))
+
+    # JR と地下鉄で同名の別の駅（琴似・白石・平岸）は、地下鉄側の名前に種別を付けて区別する
+    counts = defaultdict(int)
+    for s in merged:
+        counts[s["name"]] += 1
+    line_by_id = {l["id"]: l for l in out_lines}
+    for s in merged:
+        if counts[s["name"]] < 2 or not all(l in NAME_SUFFIX for l in s["lines"]):
+            continue
+        old, new = s["name"], f"{s['name']}（{NAME_SUFFIX[s['lines'][0]]}）"
+        s["name"] = new
+        for lid in s["lines"]:
+            for sec in line_by_id[lid]["sections"]:
+                sec["stations"] = [new if n == old else n for n in sec["stations"]]
+    names = [s["name"] for s in merged]
+    dup = sorted({n for n in names if names.count(n) > 1})
+    if dup:
+        sys.exit(f"同名の駅を区別できません: {dup}")
 
     out = {
         "source": f"国土数値情報（鉄道データ）{meta_date}（国土交通省）を加工して作成",

@@ -1,27 +1,34 @@
-// 北海道在来線路線図 — Google Maps JavaScript API 版
+// 北海道在来線路線図 — Google マップ / オフライン地図
 import { createTrainModel, REFRESH_MS } from "./trains.js";
+import { createTimetableModel } from "./timetable.js";
+import { createGoogleView } from "./map-google.js";
+import { createOfflineView } from "./map-offline.js";
 
 const HOKKAIDO_CENTER = { lat: 43.35, lng: 142.6 };
 const HOKKAIDO_BOUNDS = { north: 45.6, south: 41.3, west: 139.3, east: 145.9 };
+const MAP_RESTRICTION = { north: 47.5, south: 39.5, west: 136.5, east: 149 };
+const MIN_ZOOM = 6;
 const KEY_STORAGE = "tmv.googleMapsApiKey";
+const MODE_STORAGE = "tmv.mapMode"; // "offline" のときはオフライン地図を使う
+const TIMETABLE_URL = "data/trains.json";
+const TIMETABLE_LINES = ["hakodate"]; // 実際の時刻表で走らせる路線（デモ列車は出さない）
 
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 const state = {
   data: null,
-  map: null,
-  info: null,
+  map: null, // 地図ビュー（map-google.js / map-offline.js）
   lineById: new Map(),
   stationByName: new Map(),
-  polylines: new Map(), // lineId -> [Polyline]
-  markers: new Map(), // stationName -> AdvancedMarkerElement
-  casings: new WeakSet(), // 縁取り用 Polyline
+  polylines: new Map(), // lineId -> [路線ハンドル]
+  markers: new Map(), // stationName -> マーカーハンドル
   visible: new Set(),
   focused: null, // フォーカス中の路線 id
   activeStation: null,
-  trainModel: null,
-  trainMarkers: new Map(), // train id -> AdvancedMarkerElement
+  trainModel: null, // デモ列車
+  timetableModel: null, // 実際の時刻表の列車
+  trainMarkers: new Map(), // train id -> マーカーハンドル
   trains: new Map(), // train id -> 最新の列車データ
   showTrains: true,
   infoTrain: null, // 情報ウィンドウに表示中の列車 id
@@ -39,30 +46,16 @@ function resolveApiKey() {
   const params = new URLSearchParams(location.search);
   return params.get("key") || (window.APP_CONFIG || {}).googleMapsApiKey || readStoredKey();
 }
-
-// Google 公式の動的ローダー (https://developers.google.com/maps/documentation/javascript/load-maps-js-api)
-function loadGoogleMaps(key) {
-  return new Promise((resolve, reject) => {
-    ((g) => {
-      var h, a, k, p = "The Google Maps JavaScript API", c = "google", l = "importLibrary", q = "__ib__", m = document, b = window;
-      b = b[c] || (b[c] = {});
-      var d = b.maps || (b.maps = {}), r = new Set, e = new URLSearchParams,
-        u = () => h || (h = new Promise(async (f, n) => {
-          await (a = m.createElement("script"));
-          e.set("libraries", [...r] + "");
-          for (k in g) e.set(k.replace(/[A-Z]/g, (t) => "_" + t[0].toLowerCase()), g[k]);
-          e.set("callback", c + ".maps." + q);
-          a.src = `https://maps.${c}apis.com/maps/api/js?` + e;
-          d[q] = f;
-          a.onerror = () => h = n(Error(p + " could not load."));
-          a.nonce = m.querySelector("script[nonce]")?.nonce || "";
-          m.head.append(a);
-        }));
-      d[l] ? console.warn(p + " only loads once. Ignoring:", g) : d[l] = (f, ...n) => r.add(f) && u().then(() => d[l](f, ...n));
-    })({ key, v: "weekly", language: "ja", region: "JP" });
-    Promise.all([google.maps.importLibrary("maps"), google.maps.importLibrary("marker"), google.maps.importLibrary("core")])
-      .then(resolve, reject);
-  });
+function readMode() {
+  try { return localStorage.getItem(MODE_STORAGE) || ""; } catch { return ""; }
+}
+function storeMode(mode) {
+  try { mode ? localStorage.setItem(MODE_STORAGE, mode) : localStorage.removeItem(MODE_STORAGE); } catch { /* noop */ }
+}
+function wantsOffline() {
+  const params = new URLSearchParams(location.search);
+  if (params.has("offline")) return params.get("offline") !== "0";
+  return (window.APP_CONFIG || {}).offline === true || readMode() === "offline";
 }
 
 // ---------- データ ----------
@@ -201,54 +194,28 @@ function setupSearch() {
 }
 
 // ---------- 地図 ----------
-function initMap() {
-  const { Map, InfoWindow, Polyline } = google.maps;
-  const mapId = (window.APP_CONFIG || {}).mapId || "DEMO_MAP_ID";
-  state.map = new Map($("#map"), {
-    center: HOKKAIDO_CENTER,
-    zoom: 7,
-    minZoom: 6,
-    mapId,
-    restriction: { latLngBounds: { north: 47.5, south: 39.5, west: 136.5, east: 149 }, strictBounds: false },
-    mapTypeControl: true,
-    streetViewControl: false,
-    fullscreenControl: true,
-    clickableIcons: false,
-    gestureHandling: "greedy",
-  });
-  state.map.fitBounds(HOKKAIDO_BOUNDS, 0);
-  state.info = new InfoWindow({ maxWidth: 300 });
-  state.info.addListener("closeclick", () => { setActiveStation(null); setActiveTrain(null); });
+function initMap(view) {
+  state.map = view;
+  view.onInfoClose(() => { setActiveStation(null); setActiveTrain(null); });
 
   for (const line of state.data.lines) {
-    const pls = [];
-    for (const path of line.paths) {
-      const p = path.map(([lat, lng]) => ({ lat, lng }));
-      // 白い縁取り + 路線色
-      const casing = new Polyline({ path: p, strokeColor: "#ffffff", strokeOpacity: 0.9, strokeWeight: 7, zIndex: 1, clickable: false, map: state.map });
-      const stroke = new Polyline({ path: p, strokeColor: line.color, strokeOpacity: 1, strokeWeight: 4, zIndex: 2, map: state.map });
-      stroke.addListener("click", () => toggleFocus(line.id, true));
-      state.casings.add(casing);
-      pls.push(casing, stroke);
-    }
-    state.polylines.set(line.id, pls);
+    state.polylines.set(line.id, line.paths.map((path) =>
+      view.addLine({ path, color: line.color, onClick: () => toggleFocus(line.id, true) })));
   }
 
-  const { AdvancedMarkerElement } = google.maps.marker;
   for (const st of state.data.stations) {
     const el = document.createElement("div");
     el.className = "stn" + (st.lines.length > 1 ? " transfer" : "");
     el.style.setProperty("--c", state.lineById.get(st.lines[0]).color);
     el.innerHTML = `<span class="dot"></span><span class="label">${esc(st.name)}</span>`;
-    const marker = new AdvancedMarkerElement({
-      map: state.map,
-      position: { lat: st.lat, lng: st.lng },
-      content: el,
+    const marker = view.addMarker({
+      lat: st.lat,
+      lng: st.lng,
+      el,
       title: st.name,
       zIndex: st.lines.length > 1 ? 20 : 10,
-      gmpClickable: true,
+      onClick: () => selectStation(st.name, { pan: false }),
     });
-    marker.addEventListener("gmp-click", () => selectStation(st.name, { pan: false }));
     state.markers.set(st.name, marker);
   }
 
@@ -258,7 +225,7 @@ function initMap() {
     m.classList.toggle("z-major", z >= 9);
     m.classList.toggle("z-all", z >= 11);
   };
-  state.map.addListener("zoom_changed", updateZoomClass);
+  view.onZoom(updateZoomClass);
   updateZoomClass();
 }
 
@@ -268,22 +235,18 @@ function stationVisible(st) {
 
 function refreshStyles() {
   for (const [id, pls] of state.polylines) {
-    const shown = state.visible.has(id);
-    const dim = state.focused && state.focused !== id;
-    for (const pl of pls) {
-      pl.setMap(shown ? state.map : null);
-      const isCasing = state.casings.has(pl);
-      pl.setOptions({
-        strokeOpacity: isCasing ? (dim ? 0.3 : 0.9) : dim ? 0.25 : 1,
-        zIndex: (isCasing ? 1 : 2) + (state.focused === id ? 10 : 0),
-      });
-    }
+    const style = {
+      visible: state.visible.has(id),
+      dim: !!state.focused && state.focused !== id,
+      raised: state.focused === id,
+    };
+    for (const pl of pls) pl.setStyle(style);
   }
   for (const st of state.data.stations) {
     const marker = state.markers.get(st.name);
     if (!marker) continue;
-    marker.map = stationVisible(st) ? state.map : null;
-    marker.content.classList.toggle("dimmed", !!state.focused && !st.lines.includes(state.focused));
+    marker.setVisible(stationVisible(st));
+    marker.el.classList.toggle("dimmed", !!state.focused && !st.lines.includes(state.focused));
   }
   updateTrainStyles();
   for (const li of document.querySelectorAll(".line-item")) {
@@ -304,8 +267,13 @@ function setAllVisible(on) {
 }
 
 function fitLine(line) {
-  const b = new google.maps.LatLngBounds();
-  for (const path of line.paths) for (const [lat, lng] of path) b.extend({ lat, lng });
+  const b = { north: -90, south: 90, west: 180, east: -180 };
+  for (const path of line.paths) {
+    for (const [lat, lng] of path) {
+      b.north = Math.max(b.north, lat); b.south = Math.min(b.south, lat);
+      b.east = Math.max(b.east, lng); b.west = Math.min(b.west, lng);
+    }
+  }
   state.map.fitBounds(b, 48);
 }
 
@@ -328,9 +296,9 @@ function toggleFocus(id, fromMap = false) {
 }
 
 function setActiveStation(name) {
-  if (state.activeStation) state.markers.get(state.activeStation)?.content.classList.remove("active");
+  if (state.activeStation) state.markers.get(state.activeStation)?.el.classList.remove("active");
   state.activeStation = name;
-  if (name) state.markers.get(name)?.content.classList.add("active");
+  if (name) state.markers.get(name)?.el.classList.add("active");
 }
 
 function selectStation(name, { pan = true } = {}) {
@@ -349,12 +317,10 @@ function selectStation(name, { pan = true } = {}) {
   const box = document.createElement("div");
   box.className = "iw";
   box.innerHTML = `<h3>${esc(name)}駅</h3><ul>${rows}</ul>`;
-  state.info.setContent(box);
-  // shouldFocus: false — 検索欄から開いたときにフォーカスを奪わない
-  state.info.open({ map: state.map, anchor: state.markers.get(name), shouldFocus: false });
+  state.map.openInfo(box, state.markers.get(name));
   if (pan) {
     if (state.map.getZoom() < 11) state.map.setZoom(11);
-    state.map.panTo({ lat: st.lat, lng: st.lng });
+    state.map.panTo(st.lat, st.lng);
   }
   // スマホでは地図が見えるようにパネルを畳む
   if (matchMedia("(max-width: 720px)").matches) {
@@ -390,15 +356,16 @@ function trainContent(tr) {
   ];
   const box = document.createElement("div");
   box.className = "iw";
-  box.innerHTML = `<h3>${swatch(tr.color)} ${esc(tr.type)} ${esc(tr.dest)}行<span class="demo-badge">デモ</span></h3>${rows.join("")}`;
+  const badge = tr.real ? `<span class="tt-badge">時刻表</span>` : `<span class="demo-badge">デモ</span>`;
+  box.innerHTML = `<h3>${swatch(tr.color)} ${esc(tr.type)} ${esc(tr.dest)}行${badge}</h3>${rows.join("")}`;
   return box;
 }
 
 function setActiveTrain(id) {
-  if (state.activeTrain) state.trainMarkers.get(state.activeTrain)?.content.classList.remove("active");
+  if (state.activeTrain) state.trainMarkers.get(state.activeTrain)?.el.classList.remove("active");
   state.activeTrain = id;
   state.infoTrain = id;
-  if (id) state.trainMarkers.get(id)?.content.classList.add("active");
+  if (id) state.trainMarkers.get(id)?.el.classList.add("active");
 }
 
 function openTrainInfo(id) {
@@ -406,8 +373,7 @@ function openTrainInfo(id) {
   if (!tr) return;
   setActiveStation(null);
   setActiveTrain(id);
-  state.info.setContent(trainContent(tr));
-  state.info.open({ map: state.map, anchor: state.trainMarkers.get(id), shouldFocus: false });
+  state.map.openInfo(trainContent(tr), state.trainMarkers.get(id));
 }
 
 function trainShown(tr) {
@@ -417,14 +383,14 @@ function trainShown(tr) {
 function updateTrainStyles() {
   for (const [id, marker] of state.trainMarkers) {
     const tr = state.trains.get(id);
-    marker.map = tr && trainShown(tr) ? state.map : null;
-    marker.content.classList.toggle("dimmed", !!state.focused && tr.line !== state.focused);
+    marker.setVisible(!!tr && trainShown(tr));
+    marker.el.classList.toggle("dimmed", !!state.focused && tr?.line !== state.focused);
   }
 }
 
 function updateTrains() {
-  const { AdvancedMarkerElement } = google.maps.marker;
-  const list = state.trainModel.trainsAt(Date.now());
+  const now = Date.now();
+  const list = [...state.trainModel.trainsAt(now), ...(state.timetableModel?.trainsAt(now) || [])];
   const seen = new Set();
   state.trains = new Map(list.map((tr) => [tr.id, tr]));
   for (const tr of list) {
@@ -433,38 +399,52 @@ function updateTrains() {
     if (!marker) {
       const el = document.createElement("div");
       el.className = "train";
-      marker = new AdvancedMarkerElement({ content: el, zIndex: 30, gmpClickable: true });
-      marker.addEventListener("gmp-click", () => openTrainInfo(tr.id));
+      marker = state.map.addMarker({ lat: tr.lat, lng: tr.lng, el, zIndex: 30, visible: false, onClick: () => openTrainInfo(tr.id) });
       state.trainMarkers.set(tr.id, marker);
     }
-    marker.position = { lat: tr.lat, lng: tr.lng };
-    marker.title = `${tr.type} ${tr.dest}行（${tr.number}）`;
-    marker.content.innerHTML = trainIcon(tr.color, tr.heading);
+    marker.setPosition(tr.lat, tr.lng);
+    marker.setTitle(`${tr.type} ${tr.dest}行（${tr.number}）`);
+    marker.el.innerHTML = trainIcon(tr.color, tr.heading);
+    marker.el.classList.toggle("real", !!tr.real);
   }
   // 終着した列車を消す
   for (const [id, marker] of state.trainMarkers) {
     if (seen.has(id)) continue;
-    marker.map = null;
+    marker.remove();
     state.trainMarkers.delete(id);
-    if (state.infoTrain === id) { state.info.close(); setActiveTrain(null); }
+    if (state.infoTrain === id) { state.map.closeInfo(); setActiveTrain(null); }
   }
   // 表示中の列車の情報を更新
   if (state.infoTrain && state.trains.has(state.infoTrain)) {
-    state.info.setContent(trainContent(state.trains.get(state.infoTrain)));
+    state.map.setInfoContent(trainContent(state.trains.get(state.infoTrain)));
   }
   updateTrainStyles();
-  const shown = list.filter(trainShown).length;
-  const now = new Date().toLocaleTimeString("ja-JP", { timeZone: "Asia/Tokyo", hour12: false });
+  const shown = list.filter(trainShown);
+  const real = shown.filter((tr) => tr.real).length;
+  const clock = new Date(now).toLocaleTimeString("ja-JP", { timeZone: "Asia/Tokyo", hour12: false });
   $("#train-status").textContent = list.length
-    ? `運行中 ${shown} 本 · 最終更新 ${now}`
-    : `現在運行中の列車はありません（6:00〜24:00 頃に運行） · 最終更新 ${now}`;
+    ? `運行中 ${shown.length} 本（うち時刻表 ${real} 本） · 最終更新 ${clock}`
+    : `現在運行中の列車はありません（6:00〜24:00 頃に運行） · 最終更新 ${clock}`;
 }
 
-function initTrains() {
-  state.trainModel = createTrainModel(state.data);
+// 実際の時刻表。読み込めなければデモ列車だけで続ける
+async function loadTimetable() {
+  try {
+    const res = await fetch(TIMETABLE_URL);
+    if (!res.ok) throw new Error(res.status);
+    return createTimetableModel(state.data, await res.json());
+  } catch (e) {
+    console.warn("時刻表を読み込めませんでした", e);
+    return null;
+  }
+}
+
+async function initTrains() {
+  state.timetableModel = await loadTimetable();
+  state.trainModel = createTrainModel(state.data, { excludeLines: state.timetableModel ? TIMETABLE_LINES : [] });
   $("#train-toggle").addEventListener("change", (e) => {
     state.showTrains = e.target.checked;
-    if (!state.showTrains && state.infoTrain) { state.info.close(); setActiveTrain(null); }
+    if (!state.showTrains && state.infoTrain) { state.map.closeInfo(); setActiveTrain(null); }
     updateTrainStyles();
   });
   updateTrains();
@@ -482,8 +462,43 @@ function askForKey(message) {
     const k = $("#key-input").value.trim();
     if (!k) return;
     storeKey(k);
+    storeMode("");
     location.reload();
   }, { once: true });
+}
+
+function showNotice(text) {
+  const n = $("#map-notice");
+  n.textContent = text;
+  n.hidden = false;
+  setTimeout(() => { n.hidden = true; }, 8000);
+}
+
+// ?offline パラメータを外して読み込み直す（Google マップに戻すとき）
+function reloadWithoutOfflineParam() {
+  const url = new URL(location.href);
+  url.searchParams.delete("offline");
+  location.replace(url);
+}
+
+function startMap(view) {
+  initMap(view);
+  initTrains();
+  refreshStyles();
+}
+
+async function startOffline(notice) {
+  $("#key-setup").hidden = true;
+  const view = await createOfflineView($("#map"), {
+    center: HOKKAIDO_CENTER,
+    bounds: HOKKAIDO_BOUNDS,
+    restriction: MAP_RESTRICTION,
+    minZoom: MIN_ZOOM,
+    landUrl: "data/hokkaido-land.json",
+    onSwitchToGoogle: () => { storeMode(""); reloadWithoutOfflineParam(); },
+  });
+  startMap(view);
+  if (notice) showNotice(notice);
 }
 
 async function main() {
@@ -495,6 +510,15 @@ async function main() {
   }
   renderPanel();
 
+  $("#use-offline").addEventListener("click", () => {
+    storeMode("offline");
+    // Google マップを読み込み済み（認証エラー後など）なら作り直す
+    if (state.map) location.reload();
+    else startOffline();
+  });
+
+  if (wantsOffline()) return startOffline();
+
   const key = resolveApiKey();
   if (!key) return askForKey();
   // キーが無効・リファラー不許可のとき Google が呼び出す
@@ -502,15 +526,21 @@ async function main() {
     try { localStorage.removeItem(KEY_STORAGE); } catch { /* noop */ }
     askForKey("API キーが無効か、Maps JavaScript API が有効になっていないか、この URL が許可されていません（HTTP リファラー制限）。");
   };
+  let view;
   try {
-    await loadGoogleMaps(key);
-  } catch (e) {
-    try { localStorage.removeItem(KEY_STORAGE); } catch { /* noop */ }
-    return askForKey(e.message);
+    view = await createGoogleView($("#map"), {
+      key,
+      mapId: (window.APP_CONFIG || {}).mapId,
+      center: HOKKAIDO_CENTER,
+      bounds: HOKKAIDO_BOUNDS,
+      restriction: MAP_RESTRICTION,
+      minZoom: MIN_ZOOM,
+    });
+  } catch {
+    // ネットワークに繋がらないなどで読み込めないときはオフライン地図で続ける
+    return startOffline("Google マップを読み込めなかったため、オフライン地図で表示しています。");
   }
-  initMap();
-  initTrains();
-  refreshStyles();
+  startMap(view);
 }
 
 main();

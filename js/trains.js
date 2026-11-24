@@ -1,6 +1,7 @@
 // デモ用の仮想列車。
 // 実際の時刻表・走行位置ではなく、下の SERVICES に定めた一定間隔のダイヤから
 // 現在時刻（日本時間）の位置を計算して表示する。
+// 実際の時刻表がある路線（函館本線）は timetable.js で計算する。
 
 export const REFRESH_MS = 10_000;
 
@@ -31,6 +32,14 @@ const SERVICES = [
   { line: "senmo", from: "網走", to: "東釧路", every: 180, type: "普通" },
   { line: "hidaka", from: "苫小牧", to: "鵡川", every: 120, type: "普通" },
   { line: "isaribi", from: "五稜郭", to: "木古内", every: 60, type: "普通" },
+  { line: "namboku", from: "麻生", to: "真駒内", every: 6, type: "地下鉄" },
+  { line: "tozai", from: "宮の沢", to: "新さっぽろ", every: 6, type: "地下鉄" },
+  { line: "toho", from: "栄町", to: "福住", every: 7, type: "地下鉄" },
+  // ループ線は起点＝終点（外回り・内回りの両方向に走る）
+  { line: "sapporo-tram", from: "西4丁目", to: "西4丁目", every: 8, type: "市電" },
+  { line: "hakodate-tram", from: "湯の川", to: "函館どつく前", every: 12, type: "市電" },
+  // 実際は湯の川〜谷地頭の直通だが、系統は 1 区間内に限るため十字街で分けている
+  { line: "hakodate-tram", from: "十字街", to: "谷地頭", every: 12, type: "市電" },
 ];
 
 // 種別ごとの走行速度 (km/h, 駅間の平均) と停車時間 (秒)
@@ -38,6 +47,8 @@ const TYPES = {
   普通: { speed: 60, dwell: 30, stopsAll: true },
   快速: { speed: 75, dwell: 30, stopsAll: true },
   特急: { speed: 100, dwell: 60, stopsAll: true },
+  地下鉄: { speed: 40, dwell: 25, stopsAll: true },
+  市電: { speed: 16, dwell: 20, stopsAll: true },
 };
 
 const FIRST_DEP = 6 * 3600; // 始発 6:00
@@ -62,7 +73,8 @@ function bearing(a, b) {
 function buildService(svc, line, index) {
   for (const sec of line.sections) {
     const i = sec.stations.indexOf(svc.from);
-    const j = sec.stations.indexOf(svc.to);
+    // ループ線（起点＝終点）は最後の駅を終点にする
+    const j = sec.stations.lastIndexOf(svc.to);
     if (i === -1 || j === -1) continue;
     const [a, b] = i < j ? [i, j] : [j, i];
     const path = sec.path.slice(sec.stopIdx[a], sec.stopIdx[b] + 1);
@@ -115,9 +127,12 @@ export function formatTime(sec) {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
-export function createTrainModel(data) {
+// excludeLines: 実際の時刻表で走らせる路線。その路線のデモ列車は出さない
+export function createTrainModel(data, { excludeLines = [] } = {}) {
   const lineById = new Map(data.lines.map((l) => [l.id, l]));
-  const services = SERVICES.map((s, i) => buildService(s, lineById.get(s.line), i)).filter(Boolean);
+  const services = SERVICES
+    .map((s, i) => (excludeLines.includes(s.line) ? null : buildService(s, lineById.get(s.line), i)))
+    .filter(Boolean);
   const tables = new Map();
   for (const s of services) tables.set(s.index, [timetable(s, 0), timetable(s, 1)]);
 

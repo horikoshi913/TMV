@@ -27,10 +27,9 @@
           <label class="train-toggle">
             <input type="checkbox" id="train-toggle" checked>
             <span>運行中の列車を表示</span>
-            <span class="demo-badge">デモ</span>
           </label>
           <p id="train-status" class="muted"></p>
-          <p class="muted small">一定間隔の仮想ダイヤから位置を計算した表示です。実際の運行とは異なります。10秒ごとに更新。</p>
+          <p class="muted small">函館本線の列車<span class="tt-badge">時刻表</span>は時刻表から計算した位置です（遅れ・運休は反映されません）。それ以外の路線<span class="demo-badge">デモ</span>は一定間隔の仮想ダイヤによる表示で、実際の運行とは異なります。10秒ごとに更新。</p>
         </div>
         <div class="line-tools">
           <button id="show-all" class="text-btn">すべて表示</button>
@@ -52,8 +51,12 @@
           <input id="key-input" type="text" placeholder="AIza…" required spellcheck="false">
           <button type="submit">地図を読み込む</button>
           <p id="key-error" class="error" hidden></p>
+          <div class="or"><span>または</span></div>
+          <button type="button" id="use-offline" class="secondary">API キーなしで使う（オフライン地図）</button>
+          <p class="muted small">海岸線と路線だけの簡易地図です。インターネット接続も不要です。</p>
         </form>
       </div>
+      <div id="map-notice" class="map-notice" role="status" hidden></div>
     </main>
   </div>
   <script src="config.js" onerror="window.APP_CONFIG = window.APP_CONFIG || {}"></script>
